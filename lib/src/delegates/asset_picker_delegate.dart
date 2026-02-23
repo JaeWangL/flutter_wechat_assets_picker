@@ -2,12 +2,11 @@
 // Use of this source code is governed by an Apache license that can be found
 // in the LICENSE file.
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart' hide Path;
 import 'package:flutter/services.dart' show MethodCall;
-import 'package:gallery_media_picker/gallery_media_picker.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:wechat_picker_library/wechat_picker_library.dart'
     show buildTheme;
@@ -22,6 +21,7 @@ import 'asset_picker_builder_delegate.dart';
 
 class AssetPickerDelegate {
   const AssetPickerDelegate();
+  static final ImagePicker _imagePicker = ImagePicker();
 
   /// {@template wechat_assets_picker.delegates.AssetPickerDelegate.permissionCheck}
   /// Request the current [PermissionState] of required permissions.
@@ -78,12 +78,7 @@ class AssetPickerDelegate {
     AssetPickerPageRouteBuilder<List<AssetEntity>>? pageRouteBuilder,
   }) async {
     if (_shouldUseAndroidPlatformPhotoPicker(pickerConfig)) {
-      return _pickAssetsWithAndroidPlatformPhotoPicker(
-        pickerConfig,
-        context: context,
-        useRootNavigator: useRootNavigator,
-        pageRouteSettings: pageRouteSettings,
-      );
+      return _pickAssetsWithAndroidPlatformPhotoPicker(pickerConfig);
     }
 
     permissionRequestOption ??= PermissionRequestOption(
@@ -174,153 +169,86 @@ class AssetPickerDelegate {
   }
 
   Future<List<AssetEntity>?> _pickAssetsWithAndroidPlatformPhotoPicker(
-    AssetPickerConfig pickerConfig, {
-    BuildContext? context,
-    bool useRootNavigator = true,
-    RouteSettings? pageRouteSettings,
-  }) async {
+    AssetPickerConfig pickerConfig,
+  ) async {
     final requestType = pickerConfig.requestType;
     final maxAssets = pickerConfig.maxAssets;
 
-    if (context != null) {
-      try {
-        final galleryPicked = await _pickWithGalleryMediaPicker(
-          context: context,
-          requestType: requestType,
-          maxAssets: maxAssets,
-          useRootNavigator: useRootNavigator,
-          pageRouteSettings: pageRouteSettings,
-        );
-        if (galleryPicked == null) {
-          return null;
-        }
-        return _toAssetEntities(
-          pickedFiles: galleryPicked,
-          requestType: requestType,
-          maxAssets: maxAssets,
-        );
-      } on Object {
-        // Fallback to file_picker when gallery picker cannot be used
-        // (e.g., missing media permission in policy-safe builds).
-      }
-    }
-
-    final filePicked = await _pickWithFilePicker(
+    final pickedFiles = await _pickWithImagePicker(
       requestType: requestType,
       maxAssets: maxAssets,
     );
-    if (filePicked == null || filePicked.isEmpty) {
+    if (pickedFiles == null || pickedFiles.isEmpty) {
       return null;
     }
     return _toAssetEntities(
-      pickedFiles: filePicked,
+      pickedFiles: pickedFiles,
       requestType: requestType,
       maxAssets: maxAssets,
     );
   }
 
-  Future<List<_PickedFileData>?> _pickWithFilePicker({
+  Future<List<_PickedFileData>?> _pickWithImagePicker({
     required RequestType requestType,
     required int maxAssets,
   }) async {
-    final pickerResult = await FilePicker.platform.pickFiles(
-      allowMultiple: maxAssets != 1,
-      lockParentWindow: true,
-      type: _resolveFilePickerType(requestType),
-    );
-
-    if (pickerResult == null || pickerResult.files.isEmpty) {
-      return null;
-    }
-
-    final pickedFiles = <_PickedFileData>[];
-    for (final picked in pickerResult.files) {
-      final filePath = picked.path;
-      if (filePath == null || filePath.isEmpty) {
-        continue;
+    if (requestType == RequestType.video) {
+      final picked = await _imagePicker.pickVideo(source: ImageSource.gallery);
+      if (picked == null) {
+        return null;
       }
-      final fileName =
-          picked.name.isNotEmpty ? picked.name : _fileNameFromPath(filePath);
-      final extension = _fileExtension(fileName);
-      pickedFiles.add(
-        _PickedFileData(
-          path: filePath,
-          name: fileName,
-          mimeType: _resolveMimeType(extension),
-        ),
-      );
+      return <_PickedFileData>[
+        _pickedFileDataFromXFile(picked, explicitType: AssetType.video),
+      ];
     }
 
-    if (pickedFiles.isEmpty) {
+    if (requestType == RequestType.image) {
+      if (maxAssets == 1) {
+        final picked = await _imagePicker.pickImage(
+          source: ImageSource.gallery,
+        );
+        if (picked == null) {
+          return null;
+        }
+        return <_PickedFileData>[
+          _pickedFileDataFromXFile(picked, explicitType: AssetType.image),
+        ];
+      }
+      final picked = await _imagePicker.pickMultiImage();
+      if (picked.isEmpty) {
+        return null;
+      }
+      return picked
+          .map(
+            (file) => _pickedFileDataFromXFile(
+              file,
+              explicitType: AssetType.image,
+            ),
+          )
+          .toList(growable: false);
+    }
+
+    final picked = await _imagePicker.pickMultipleMedia();
+    if (picked.isEmpty) {
       return null;
     }
-    return pickedFiles;
+    return picked.map(_pickedFileDataFromXFile).toList(growable: false);
   }
 
-  Future<List<_PickedFileData>?> _pickWithGalleryMediaPicker({
-    required BuildContext context,
-    required RequestType requestType,
-    required int maxAssets,
-    required bool useRootNavigator,
-    RouteSettings? pageRouteSettings,
-  }) async {
-    final permissionState = await PhotoManager.requestPermissionExtend();
-    if (permissionState != PermissionState.authorized &&
-        permissionState != PermissionState.limited) {
-      throw StateError(
-        'gallery_media_picker requires authorized media permission.',
-      );
-    }
-
-    final navigator = Navigator.maybeOf(
-      context,
-      rootNavigator: useRootNavigator,
+  _PickedFileData _pickedFileDataFromXFile(
+    XFile picked, {
+    AssetType? explicitType,
+  }) {
+    final filePath = picked.path;
+    final fileName =
+        picked.name.isNotEmpty ? picked.name : _fileNameFromPath(filePath);
+    final extension = _fileExtension(fileName);
+    return _PickedFileData(
+      path: filePath,
+      name: fileName,
+      mimeType: _resolveMimeType(extension),
+      explicitType: explicitType,
     );
-    if (navigator == null) {
-      throw StateError('Navigator unavailable for gallery_media_picker.');
-    }
-
-    final selected = await navigator.push<List<PickedAssetModel>>(
-      MaterialPageRoute<List<PickedAssetModel>>(
-        builder: (_) => _GalleryMediaPickerFallbackPage(
-          requestType: requestType,
-          maxAssets: maxAssets,
-        ),
-        settings: pageRouteSettings,
-      ),
-    );
-    if (selected == null || selected.isEmpty) {
-      return null;
-    }
-
-    final pickedFiles = <_PickedFileData>[];
-    for (final picked in selected) {
-      final filePath = picked.path;
-      if (filePath.isEmpty) {
-        continue;
-      }
-      final fileName = (picked.title?.isNotEmpty ?? false)
-          ? picked.title!
-          : _fileNameFromPath(filePath);
-      final extension = _fileExtension(fileName);
-      pickedFiles.add(
-        _PickedFileData(
-          path: filePath,
-          name: fileName,
-          mimeType: _resolveMimeType(extension),
-          width: picked.width,
-          height: picked.height,
-          explicitType: picked.type == PickedAssetType.video
-              ? AssetType.video
-              : AssetType.image,
-        ),
-      );
-    }
-
-    if (pickedFiles.isEmpty) {
-      return null;
-    }
-    return pickedFiles;
   }
 
   List<AssetEntity> _toAssetEntities({
@@ -349,24 +277,14 @@ class AssetPickerDelegate {
             mimeType: mimeType,
             explicitType: file.explicitType,
           ).index,
-          width: file.width,
-          height: file.height,
+          width: 0,
+          height: 0,
           title: fileName,
           mimeType: mimeType,
         ),
       );
     }
     return entities;
-  }
-
-  FileType _resolveFilePickerType(RequestType requestType) {
-    if (requestType == RequestType.image) {
-      return FileType.image;
-    }
-    if (requestType == RequestType.video) {
-      return FileType.video;
-    }
-    return FileType.media;
   }
 
   String _fileNameFromPath(String filePath) {
@@ -568,130 +486,11 @@ class _PickedFileData {
     required this.path,
     required this.name,
     this.mimeType,
-    this.width = 0,
-    this.height = 0,
     this.explicitType,
   });
 
   final String path;
   final String name;
   final String? mimeType;
-  final int width;
-  final int height;
   final AssetType? explicitType;
-}
-
-class _GalleryMediaPickerFallbackPage extends StatefulWidget {
-  const _GalleryMediaPickerFallbackPage({
-    required this.requestType,
-    required this.maxAssets,
-  });
-
-  final RequestType requestType;
-  final int maxAssets;
-
-  @override
-  State<_GalleryMediaPickerFallbackPage> createState() =>
-      _GalleryMediaPickerFallbackPageState();
-}
-
-class _GalleryMediaPickerFallbackPageState
-    extends State<_GalleryMediaPickerFallbackPage> {
-  static const int _unboundedMaxAssets = 999;
-
-  List<PickedAssetModel> _selected = const <PickedAssetModel>[];
-  bool _isClosing = false;
-
-  bool get _isSinglePick => widget.maxAssets == 1;
-
-  GalleryMediaType get _mediaType {
-    if (widget.requestType == RequestType.image) {
-      return GalleryMediaType.onlyImages;
-    }
-    if (widget.requestType == RequestType.video) {
-      return GalleryMediaType.onlyVideos;
-    }
-    return GalleryMediaType.all;
-  }
-
-  void _onSelectionChanged(List<PickedAssetModel> selected) {
-    setState(() {
-      _selected = selected;
-    });
-    if (_isSinglePick && selected.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || _isClosing) {
-          return;
-        }
-        _close(<PickedAssetModel>[selected.first]);
-      });
-    }
-  }
-
-  void _close([List<PickedAssetModel>? result]) {
-    if (_isClosing) {
-      return;
-    }
-    _isClosing = true;
-    final navigator = Navigator.of(context);
-    final route = ModalRoute.of(context);
-    if (route == null) {
-      navigator.pop(result);
-      return;
-    }
-    navigator.removeRoute(route, result);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isDoneEnabled = _selected.isNotEmpty;
-    return Material(
-      color: Colors.black,
-      child: SafeArea(
-        child: GalleryMediaPicker(
-          pathList: _onSelectionChanged,
-          appBarLeadingWidget: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              TextButton(
-                onPressed: () => _close(),
-                child: const Text(
-                  'Cancel',
-                  style: TextStyle(color: Colors.white),
-                ),
-              ),
-              TextButton(
-                onPressed: isDoneEnabled ? () => _close(_selected) : null,
-                child: Text(
-                  'Done',
-                  style: TextStyle(
-                    color: isDoneEnabled ? Colors.white : Colors.white38,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          mediaPickerParams: MediaPickerParamsModel(
-            singlePick: _isSinglePick,
-            maxPickImages:
-                widget.maxAssets > 0 ? widget.maxAssets : _unboundedMaxAssets,
-            mediaType: _mediaType,
-            appBarHeight: 56,
-            appBarColor: Colors.black,
-            gridViewBgColor: Colors.black,
-            albumTextColor: Colors.white,
-            albumSelectTextColor: Colors.white,
-            albumSelectIconColor: Colors.white,
-            albumDropDownBgColor: Colors.black,
-            selectedAssetBgColor: Colors.white24,
-            selectedCheckColor: Colors.white,
-            selectedCheckBgColor: Colors.black54,
-            selectedAlbumBgColor: Colors.white24,
-            selectedAlbumTextColor: Colors.white,
-            thumbnailBgColor: Colors.black12,
-          ),
-        ),
-      ),
-    );
-  }
 }
