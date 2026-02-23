@@ -2,14 +2,18 @@
 // Use of this source code is governed by an Apache license that can be found
 // in the LICENSE file.
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart' hide Path;
 import 'package:flutter/services.dart' show MethodCall;
+import 'package:image_picker/image_picker.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:wechat_picker_library/wechat_picker_library.dart'
     show buildTheme;
 
 import '../constants/config.dart';
-import '../constants/constants.dart' show packageName;
+import '../constants/constants.dart'
+    show androidPlatformPickerAssetIdPrefix, packageName;
 import '../provider/asset_picker_provider.dart';
 import '../widget/asset_picker.dart';
 import '../widget/asset_picker_page_route.dart';
@@ -72,6 +76,10 @@ class AssetPickerDelegate {
     RouteSettings? pageRouteSettings,
     AssetPickerPageRouteBuilder<List<AssetEntity>>? pageRouteBuilder,
   }) async {
+    if (_shouldUseAndroidPlatformPhotoPicker(pickerConfig)) {
+      return _pickAssetsWithAndroidPlatformPhotoPicker(pickerConfig);
+    }
+
     permissionRequestOption ??= PermissionRequestOption(
       androidPermission: AndroidPermission(
         type: pickerConfig.requestType,
@@ -138,6 +146,203 @@ class AssetPickerDelegate {
     );
     return result;
   }
+
+  /// Pick assets without a [BuildContext].
+  ///
+  /// This is only supported when Android platform picker mode is enabled.
+  Future<List<AssetEntity>?> pickAssetsWithoutContext({
+    AssetPickerConfig pickerConfig = const AssetPickerConfig(),
+  }) async {
+    if (_shouldUseAndroidPlatformPhotoPicker(pickerConfig)) {
+      return _pickAssetsWithAndroidPlatformPhotoPicker(pickerConfig);
+    }
+    throw StateError(
+      'pickAssetsWithoutContext requires Android platform picker mode.',
+    );
+  }
+
+  bool _shouldUseAndroidPlatformPhotoPicker(AssetPickerConfig pickerConfig) {
+    return !kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.android &&
+        pickerConfig.androidUsePlatformPhotoPicker;
+  }
+
+  Future<List<AssetEntity>?> _pickAssetsWithAndroidPlatformPhotoPicker(
+    AssetPickerConfig pickerConfig,
+  ) async {
+    final requestType = pickerConfig.requestType;
+    final picker = ImagePicker();
+    final maxAssets = pickerConfig.maxAssets;
+    late final List<XFile> pickedFiles;
+
+    if (requestType == RequestType.image) {
+      if (maxAssets == 1) {
+        final single = await picker.pickImage(
+          source: ImageSource.gallery,
+          requestFullMetadata: false,
+        );
+        if (single == null) {
+          return null;
+        }
+        pickedFiles = <XFile>[single];
+      } else {
+        pickedFiles = await picker.pickMultiImage(
+          limit: _multiSelectionLimit(maxAssets),
+          requestFullMetadata: false,
+        );
+      }
+    } else if (requestType == RequestType.video) {
+      if (maxAssets == 1) {
+        final single = await picker.pickVideo(
+          source: ImageSource.gallery,
+        );
+        if (single == null) {
+          return null;
+        }
+        pickedFiles = <XFile>[single];
+      } else {
+        pickedFiles = await picker.pickMultiVideo(
+          limit: _multiSelectionLimit(maxAssets),
+        );
+      }
+    } else {
+      if (maxAssets == 1) {
+        final single = await picker.pickMedia(
+          requestFullMetadata: false,
+        );
+        if (single == null) {
+          return null;
+        }
+        pickedFiles = <XFile>[single];
+      } else {
+        pickedFiles = await picker.pickMultipleMedia(
+          limit: _multiSelectionLimit(maxAssets),
+          requestFullMetadata: false,
+        );
+      }
+    }
+
+    if (pickedFiles.isEmpty) {
+      return null;
+    }
+
+    final selectedFiles = maxAssets > 0
+        ? pickedFiles.take(maxAssets)
+        : pickedFiles;
+    final entities = <AssetEntity>[];
+
+    for (final file in selectedFiles) {
+      final filePath = file.path;
+      if (filePath.isEmpty) {
+        continue;
+      }
+      final fileName = file.name.isNotEmpty
+          ? file.name
+          : _fileNameFromPath(filePath);
+      final extension = _fileExtension(fileName);
+      final mimeType = file.mimeType ?? _resolveMimeType(extension);
+      entities.add(
+        AssetEntity(
+          id: '$androidPlatformPickerAssetIdPrefix${Uri.encodeComponent(filePath)}',
+          typeInt: _resolveAssetType(
+            requestType: requestType,
+            extension: extension,
+            mimeType: mimeType,
+          ).index,
+          width: 0,
+          height: 0,
+          title: fileName,
+          mimeType: mimeType,
+        ),
+      );
+    }
+
+    return entities;
+  }
+
+  int? _multiSelectionLimit(int maxAssets) {
+    if (maxAssets <= 1) {
+      return null;
+    }
+    return maxAssets > 0 ? maxAssets : null;
+  }
+
+  String _fileNameFromPath(String filePath) {
+    final normalized = filePath.replaceAll('\\', '/');
+    final separatorIndex = normalized.lastIndexOf('/');
+    if (separatorIndex < 0 || separatorIndex + 1 >= normalized.length) {
+      return filePath;
+    }
+    return normalized.substring(separatorIndex + 1);
+  }
+
+  String _fileExtension(String fileName) {
+    final dotIndex = fileName.lastIndexOf('.');
+    if (dotIndex < 0 || dotIndex + 1 >= fileName.length) {
+      return '';
+    }
+    return fileName.substring(dotIndex + 1).toLowerCase();
+  }
+
+  AssetType _resolveAssetType({
+    required RequestType requestType,
+    required String extension,
+    String? mimeType,
+  }) {
+    if (requestType == RequestType.image) {
+      return AssetType.image;
+    }
+    if (requestType == RequestType.video) {
+      return AssetType.video;
+    }
+    if (mimeType != null && mimeType.startsWith('video/')) {
+      return AssetType.video;
+    }
+    if (_videoExtensions.contains(extension)) {
+      return AssetType.video;
+    }
+    return AssetType.image;
+  }
+
+  String? _resolveMimeType(String extension) {
+    if (extension.isEmpty) {
+      return null;
+    }
+    if (_imageExtensions.contains(extension)) {
+      if (extension == 'jpg') {
+        return 'image/jpeg';
+      }
+      return 'image/$extension';
+    }
+    if (_videoExtensions.contains(extension)) {
+      if (extension == 'mov') {
+        return 'video/quicktime';
+      }
+      return 'video/$extension';
+    }
+    return null;
+  }
+
+  static const Set<String> _imageExtensions = <String>{
+    'jpg',
+    'jpeg',
+    'png',
+    'webp',
+    'gif',
+    'bmp',
+    'heic',
+    'heif',
+  };
+
+  static const Set<String> _videoExtensions = <String>{
+    'mp4',
+    'mov',
+    'm4v',
+    'avi',
+    'mkv',
+    '3gp',
+    'webm',
+  };
 
   /// {@template wechat_assets_picker.delegates.AssetPickerDelegate.pickAssetsWithDelegate}
   /// Pick assets with the given [delegate].

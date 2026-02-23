@@ -69,6 +69,17 @@ class AssetPicker<Asset, Path,
     );
   }
 
+  /// Pick assets without a [BuildContext].
+  ///
+  /// This is only supported by delegates that provide a context-free flow.
+  static Future<List<AssetEntity>?> pickAssetsWithoutContext({
+    AssetPickerConfig pickerConfig = const AssetPickerConfig(),
+  }) {
+    return _pickerDelegate.pickAssetsWithoutContext(
+      pickerConfig: pickerConfig,
+    );
+  }
+
   /// {@macro wechat_assets_picker.delegates.AssetPickerDelegate.pickAssetsWithDelegate}
   static Future<List<Asset>?> pickAssetsWithDelegate<
       Asset,

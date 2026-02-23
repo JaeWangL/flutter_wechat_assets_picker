@@ -619,7 +619,7 @@ abstract class AssetPickerBuilderDelegate<Asset, Path> {
     return GestureDetector(
       onTap: () {
         Feedback.forTap(context);
-        PhotoManager.openSetting();
+        PhotoManager.presentLimited();
       },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -2529,7 +2529,7 @@ class DefaultAssetPickerBuilderDelegate<T extends DefaultAssetPickerProvider>
     return GestureDetector(
       onTap: () {
         Feedback.forTap(context);
-        PhotoManager.openSetting();
+        PhotoManager.presentLimited();
       },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10)
