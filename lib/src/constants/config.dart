@@ -41,6 +41,7 @@ class AssetPickerConfig {
     this.shouldAutoplayPreview = false,
     this.dragToSelect,
     this.enableLivePhoto = true,
+    this.androidUsePlatformPhotoPicker = false,
   })  : assert(
           pickerTheme == null || themeColor == null,
           'pickerTheme and themeColor cannot be set at the same time.',
@@ -218,4 +219,11 @@ class AssetPickerConfig {
   /// 当设置为 `false` 时，选择器中将不会显示实况图片相关的标识和交互。
   /// {@endtemplate}
   final bool enableLivePhoto;
+
+  /// Whether Android should use the platform photo picker mode directly.
+  ///
+  /// This mode does not rely on `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO`.
+  /// It is suitable for Play policy cases where only one-time media selection
+  /// is needed.
+  final bool androidUsePlatformPhotoPicker;
 }
